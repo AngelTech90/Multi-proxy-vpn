@@ -1,0 +1,42 @@
+# VPN Multi-Proxy System - Git Ignore
+
+# Credentials - NEVER commit these
+*.txt
+!example-credentials.txt
+
+# OVPN config files
+*.ovpn
+!example-*.ovpn
+
+# System config
+*.conf
+*.pid
+*.log
+
+# Temporary files
+*.tmp
+*.swp
+*.swo
+*~
+
+# Credentials directory (if exists)
+credentials/
+
+# Logs
+/var/log/protonvpn/
+
+# PID files
+/var/run/openvpn-*.pid
+/var/run/microsocks-*.pid
+
+# Temporary VPN configs
+/tmp/*.ovpn
+/tmp/credentials*.txt
+
+# System directories (created by setup)
+/etc/protonvpn/
+/usr/local/bin/ovpn/
+
+# OS files
+.DS_Store
+Thumbs.db
