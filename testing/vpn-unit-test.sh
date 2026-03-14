@@ -139,7 +139,7 @@ echo "═══ SECCIÓN 4: Sistema en Ejecución ═══"
 ACTIVE_VPNS=()
 
 # Check each possible tun interface
-for TUN_DEV in tun0 tun1 tun2 tun3 tun4 tun5 tun6 tun7; do
+for TUN_DEV in tun0 tun1 tun2 tun3 tun4 tun5 tun6 tun7 tun8 tun9 tun10 tun11; do
     if ip addr show ${TUN_DEV} &>/dev/null; then
         # Find corresponding port and name from the configuration
         TABLE_ID=$(echo "${TUN_DEV}" | sed 's/tun//' | sed 's/^/10/')
@@ -262,7 +262,7 @@ echo ""
 echo "═══ SECCIÓN 5: Policy Routing ═══"
 
 # Test routing rules dynamically based on active interfaces
-for TUN_DEV in tun0 tun1 tun2 tun3 tun4 tun5 tun6 tun7; do
+for TUN_DEV in tun0 tun1 tun2 tun3 tun4 tun5 tun6 tun7 tun8 tun9 tun10 tun11; do
     if ip addr show ${TUN_DEV} &>/dev/null; then
         TABLE_ID=$(ip rule list | grep "uidrange" | grep -oP 'lookup\s+\K\d+' | head -1)
         if [ -n "${TABLE_ID}" ]; then

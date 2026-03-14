@@ -11,7 +11,7 @@ set -e
 
 # Configuración
 PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-VPN_DIR="/etc/protonvpn"
+VPN_DIR="/usr/local/bin/ovpn"
 LOG_DIR="/var/log/protonvpn"
 RUN_DIR="/var/run"
 CONFIG_DIR="${PROJECT_DIR}/config"
@@ -298,7 +298,7 @@ integrate_credentials() {
 create_users() {
     log_info "Creando usuarios vpnuser..."
     
-    for i in $(seq 100 105); do
+    for i in $(seq 100 111); do
         PROXY_UID=$((3000 + i))
         
         if ! id "vpnuser${i}" &>/dev/null; then

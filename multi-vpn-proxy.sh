@@ -1,10 +1,10 @@
 #!/bin/bash
 
 # Configuración
-VPN_DIR="/etc/protonvpn"
+VPN_DIR="/usr/local/bin/ovpn"
 LOG_DIR="/var/log/protonvpn"
 RUN_DIR="/var/run"
-CONFIG_FILE="/etc/protonvpn/vpn-config.conf"
+CONFIG_FILE="/usr/local/bin/ovpn/vpn-config.conf"
 
 # Colores
 GREEN='\033[0;32m'
@@ -35,13 +35,13 @@ discover_vpn_servers() {
         exit 1
     fi
     
-    # Hardcoded servers que sabemos que existen + discovery automático
+    # Hardcoded servers - agregar nuevos aquí
     # Formato: NOMBRE:PUERTO:TABLA:TUN:ARCHIVO
     
     # Buscar archivos disponibles
     local AVAILABLE_OVPN=$(ls -1 "${VPN_DIR}"/*.ovpn 2>/dev/null)
     
-    # Hardcoded por ahora para evitar más problemas
+    # Servers hardcoded
     #usa -> us-free-67
     if [ -f "${VPN_DIR}/us-free-67.protonvpn.udp.ovpn" ]; then
         VPN_SERVERS["usa"]="1080:100:tun0:us-free-67.protonvpn.udp.ovpn::"
@@ -76,6 +76,42 @@ discover_vpn_servers() {
     if [ -f "${VPN_DIR}/ca-free-14.protonvpn.udp.ovpn" ]; then
         VPN_SERVERS["canada"]="1085:105:tun5:ca-free-14.protonvpn.udp.ovpn::"
         VPN_ORDER+=("canada")
+    fi
+    
+    # NUEVO: us-free-24
+    if [ -f "${VPN_DIR}/us-free-24.protonvpn.udp.ovpn" ]; then
+        VPN_SERVERS["us2"]="1086:106:tun6:us-free-24.protonvpn.udp.ovpn::"
+        VPN_ORDER+=("us2")
+    fi
+    
+    # NUEVO: us-free-26
+    if [ -f "${VPN_DIR}/us-free-26.protonvpn.udp.ovpn" ]; then
+        VPN_SERVERS["us3"]="1087:107:tun7:us-free-26.protonvpn.udp.ovpn::"
+        VPN_ORDER+=("us3")
+    fi
+    
+    # NUEVO: us-free-85 (credentials-5.txt)
+    if [ -f "${VPN_DIR}/us-free-85.protonvpn.udp.ovpn" ]; then
+        VPN_SERVERS["us4"]="1088:108:tun8:us-free-85.protonvpn.udp.ovpn::"
+        VPN_ORDER+=("us4")
+    fi
+    
+    # NUEVO: mx-free-2 (credentials-5.txt)
+    if [ -f "${VPN_DIR}/mx-free-2.protonvpn.udp.ovpn" ]; then
+        VPN_SERVERS["mx2"]="1089:109:tun9:mx-free-2.protonvpn.udp.ovpn::"
+        VPN_ORDER+=("mx2")
+    fi
+    
+    # NUEVO: us-free-1 (credentials-6.txt)
+    if [ -f "${VPN_DIR}/us-free-1.protonvpn.udp.ovpn" ]; then
+        VPN_SERVERS["us5"]="1090:110:tun10:us-free-1.protonvpn.udp.ovpn::"
+        VPN_ORDER+=("us5")
+    fi
+    
+    # NUEVO: nl-free-209 (credentials-6.txt)
+    if [ -f "${VPN_DIR}/nl-free-209.protonvpn.udp.ovpn" ]; then
+        VPN_SERVERS["nl2"]="1091:111:tun11:nl-free-209.protonvpn.udp.ovpn::"
+        VPN_ORDER+=("nl2")
     fi
     
     echo -e "${GREEN}Descubiertos ${#VPN_ORDER[@]} servidores VPN${NC}"
@@ -188,7 +224,9 @@ setup_vpn_proxy() {
         
         # Copiar archivo OVPN y credenciales a /tmp
         cp "${VPN_DIR}/${OVPN_FILE}" "${TEMP_OVPN}"
-        cp "${CREDS_FILE}" /tmp/credentials.txt
+        # Copiar con el nombre original (credentials-2.txt, credentials-3.txt, etc.)
+        local CREDS_NAME=$(basename "${CREDS_FILE}")
+        cp "${CREDS_FILE}" "/tmp/${CREDS_NAME}"
         
         # El archivo ya tiene la ruta absoluta - no tocamos auth-user-pass
         
@@ -299,7 +337,7 @@ configure_routing_v3() {
     echo -e "${YELLOW}[${VPN_NAME}]${NC} Configurando routing..."
     
     # Limpiar y recrear rt_tables para evitar conflictos
-    for num in 100 101 102 103 104 105 106 107 108; do
+    for num in 100 101 102 103 104 105 106 107 108 109 110 111; do
         sed -i "/^${num} /d" /etc/iproute2/rt_tables 2>/dev/null || true
     done
     
@@ -425,42 +463,10 @@ case "$1" in
         echo "Iniciando VPNs y proxies..."
         echo ""
         
-        # Limpiar reglas primero - solo reglas, NO tablas
-        echo -e "${YELLOW}[CLEANUP]${NC} Limpiando reglas anteriores..."
-        for uid in 3100 3101 3102 3103 3104 3105 3106 3107 3108; do
-            while ip rule del uidrange ${uid}-${uid} 2>/dev/null; do :; done
-        done
-        for fw in 100 101 102 103 104 105; do
-            while ip rule del fwmark ${fw} 2>/dev/null; do :; done
-        done
-        iptables -t mangle -F OUTPUT 2>/dev/null || true
-        rm -f "${RUN_DIR}"/openvpn-*.pid 2>/dev/null || true
-        rm -f "${RUN_DIR}"/microsocks-*.pid 2>/dev/null || true
-        echo "Listo"
-        sleep 2
-        
-        # Iniciar cada VPN con más delay
-        for VPN_NAME in "${VPN_ORDER[@]}"; do
-            IFS=':' read -r PORT TABLE TUN PRIMARY BACKUP1 BACKUP2 <<< "${VPN_SERVERS[$VPN_NAME]}"
-            echo -e "${BLUE}[${VPN_NAME}]${NC} PUERTO=${PORT} TABLA=${TABLE} TUN=${TUN}"
-            setup_vpn_proxy "${VPN_NAME}" "${PRIMARY}" "${BACKUP1}" "${PORT}" "${TABLE}" "${TUN}"
-            sleep 5
-            echo -e "${GREEN}[${VPN_NAME}]${NC} Completado, verificando regla..."
-            ip rule list | grep uidrange
-            sleep 2
-        done
-        
-        echo ""
-        echo "=========================================="
-        echo "Proceso completado"
-        echo "=========================================="
-        
-        show_status
-        
         # Limpiar configuración anterior
         rm -f "${CONFIG_FILE}"
         
-        # LIMPIEZA TOTAL DE REGLAS VIEJAS - FORzar limpieza total
+        # LIMPIEZA TOTAL DE REGLAS VIEJAS - Forzar limpieza total
         echo -e "${YELLOW}[CLEANUP]${NC} Limpiando reglas de routing anteriores..."
         
         # Matar todos los procesos
@@ -468,12 +474,12 @@ case "$1" in
         pkill -f microsocks 2>/dev/null || true
         
         # Limpiar TODAS las reglas de uidrange existentes
-        for uid in 3100 3101 3102 3103 3104 3105 3106 3107 3108; do
+        for uid in 3100 3101 3102 3103 3104 3105 3106 3107 3108 3109 3110 3111; do
             while ip rule del uidrange ${uid}-${uid} 2>/dev/null; do :; done
         done
         
         # Limpiar TODAS las reglas fwmark
-        for table in 100 101 102 103 104 105 106 107 108; do
+        for table in 100 101 102 103 104 105 106 107 108 109 110 111; do
             while ip rule del fwmark ${table} 2>/dev/null; do :; done
             ip route flush table ${table} 2>/dev/null || true
         done
@@ -584,9 +590,154 @@ case "$1" in
         NORMAL_IP=$(timeout 10 curl -s https://ifconfig.me 2>/dev/null)
         echo "IP: ${NORMAL_IP}"
         ;;
+    
+    spec)
+        # Manejar un VPN específico
+        SPEC_ACTION=$2
+        SPEC_VPN=$3
+        
+        if [ -z "${SPEC_ACTION}" ] || [ -z "${SPEC_VPN}" ]; then
+            echo "Uso: $0 spec {start|stop|restart|status|test} <vpn_name>"
+            echo ""
+            echo "VPNs disponibles:"
+            for vpn in "${!VPN_SERVERS[@]}"; do
+                echo "  - ${vpn}"
+            done
+            exit 1
+        fi
+        
+        # Verificar que el VPN existe
+        if [ -z "${VPN_SERVERS[${SPEC_VPN}]}" ]; then
+            echo -e "${RED}Error:${NC} VPN '${SPEC_VPN}' no encontrado"
+            echo "VPNs disponibles:"
+            for vpn in "${!VPN_SERVERS[@]}"; do
+                echo "  - ${vpn}"
+            done
+            exit 1
+        fi
+        
+        # Extraer configuración del VPN específico
+        IFS=':' read -r PORT TABLE TUN PRIMARY BACKUP1 BACKUP2 <<< "${VPN_SERVERS[${SPEC_VPN}]}"
+        PROXY_UID=$((3000 + TABLE))
+        
+        case "${SPEC_ACTION}" in
+            start)
+                echo -e "${YELLOW}[SPEC]${NC} Iniciando VPN específico: ${SPEC_VPN}"
+                echo "  Puerto: ${PORT}, Tabla: ${TABLE}, Tun: ${TUN}, UID: ${PROXY_UID}"
+                
+                # Limpiar solo este VPN
+                pkill -f "openvpn.*${TUN}" 2>/dev/null || true
+                pkill -f "microsocks.*${PORT}" 2>/dev/null || true
+                
+                # Limpiar reglas específicas
+                while ip rule del uidrange ${PROXY_UID}-${PROXY_UID} 2>/dev/null; do :; done
+                while ip rule del fwmark ${TABLE} 2>/dev/null; do :; done
+                ip route flush table ${TABLE} 2>/dev/null || true
+                
+                # Iniciar el VPN específico
+                setup_vpn_proxy "${SPEC_VPN}" "${PRIMARY}" "${BACKUP1}" "${PORT}" "${TABLE}" "${TUN}"
+                
+                echo -e "${GREEN}[SPEC]${NC} VPN ${SPEC_VPN} iniciado"
+                ;;
+                
+            stop)
+                echo -e "${YELLOW}[SPEC]${NC} Deteniendo VPN específico: ${SPEC_VPN}"
+                
+                # Matar procesos
+                pkill -f "openvpn.*${TUN}" 2>/dev/null || true
+                pkill -f "microsocks.*${PORT}" 2>/dev/null || true
+                
+                # Limpiar reglas
+                while ip rule del uidrange ${PROXY_UID}-${PROXY_UID} 2>/dev/null; do :; done
+                while ip rule del fwmark ${TABLE} 2>/dev/null; do :; done
+                ip route flush table ${TABLE} 2>/dev/null || true
+                
+                # Limpiar archivos temporales
+                rm -f "/tmp/${SPEC_VPN}.ovpn" "/tmp/credentials"*.txt 2>/dev/null || true
+                
+                echo -e "${GREEN}[SPEC]${NC} VPN ${SPEC_VPN} detenido"
+                ;;
+                
+            restart)
+                echo -e "${YELLOW}[SPEC]${NC} Reiniciando VPN específico: ${SPEC_VPN}"
+                
+                # Stop
+                pkill -f "openvpn.*${TUN}" 2>/dev/null || true
+                pkill -f "microsocks.*${PORT}" 2>/dev/null || true
+                while ip rule del uidrange ${PROXY_UID}-${PROXY_UID} 2>/dev/null; do :; done
+                while ip rule del fwmark ${TABLE} 2>/dev/null; do :; done
+                ip route flush table ${TABLE} 2>/dev/null || true
+                sleep 2
+                
+                # Start
+                setup_vpn_proxy "${SPEC_VPN}" "${PRIMARY}" "${BACKUP1}" "${PORT}" "${TABLE}" "${TUN}"
+                
+                echo -e "${GREEN}[SPEC]${NC} VPN ${SPEC_VPN} reiniciado"
+                ;;
+                
+            status)
+                echo -e "${YELLOW}[SPEC]${NC} Estado de VPN: ${SPEC_VPN}"
+                echo "  Puerto proxy: ${PORT}"
+                echo "  Tabla routing: ${TABLE}"
+                echo "  Interfaz tun: ${TUN}"
+                echo "  UID: ${PROXY_UID}"
+                
+                # Verificar si el proceso está corriendo
+                if pgrep -f "microsocks.*${PORT}" > /dev/null; then
+                    echo -e "  Proxy: ${GREEN}✓ Activo${NC}"
+                else
+                    echo -e "  Proxy: ${RED}✗ Detenido${NC}"
+                fi
+                
+                if pgrep -f "openvpn.*${TUN}" > /dev/null; then
+                    echo -e "  OpenVPN: ${GREEN}✓ Activo${NC}"
+                else
+                    echo -e "  OpenVPN: ${RED}✗ Detenido${NC}"
+                fi
+                
+                # Verificar interfaz
+                if ip addr show ${TUN} &>/dev/null; then
+                    TUN_IP=$(ip -4 addr show ${TUN} | grep -oP '(?<=inet\s)\d+(\.\d+){3}' || echo "N/A")
+                    echo -e "  Interfaz ${TUN}: ${GREEN}✓${NC} (IP: ${TUN_IP})"
+                else
+                    echo -e "  Interfaz ${TUN}: ${RED}✗ No encontrada${NC}"
+                fi
+                
+                # Probar conectividad
+                echo ""
+                echo "  Probando conexión..."
+                CONN_TEST=$(timeout 5 curl --socks5 127.0.0.1:${PORT} -s -o /dev/null -w "%{http_code}" https://ifconfig.me 2>/dev/null || echo "000")
+                if [ "${CONN_TEST}" = "200" ]; then
+                    PROXY_IP=$(timeout 10 curl --socks5 127.0.0.1:${PORT} -s https://ifconfig.me 2>/dev/null)
+                    echo -e "  Conexión: ${GREEN}✓${NC} IP: ${PROXY_IP}"
+                else
+                    echo -e "  Conexión: ${RED}✗ Falló${NC}"
+                fi
+                ;;
+                
+            test)
+                echo -e "${YELLOW}[SPEC]${NC} Probando VPN específico: ${SPEC_VPN}"
+                echo "  Puerto: ${PORT}"
+                
+                CONN_TEST=$(timeout 10 curl --socks5 127.0.0.1:${PORT} -s -o /dev/null -w "%{http_code}" https://ifconfig.me 2>/dev/null || echo "000")
+                if [ "${CONN_TEST}" = "200" ]; then
+                    PROXY_IP=$(timeout 15 curl --socks5 127.0.0.1:${PORT} -s https://ifconfig.me 2>/dev/null)
+                    echo -e "${GREEN}✓${NC} Conexión exitosa"
+                    echo "  IP: ${PROXY_IP}"
+                else
+                    echo -e "${RED}✗ Error de conexión${NC}"
+                fi
+                ;;
+                
+            *)
+                echo "Uso: $0 spec {start|stop|restart|status|test} <vpn_name>"
+                exit 1
+                ;;
+        esac
+        ;;
         
     *)
-        echo "Uso: $0 {start|stop|restart|status|test}"
+        echo "Uso: $0 {start|stop|restart|status|test} o $0 spec {start|stop|restart|status|test} <vpn_name>"
         exit 1
         ;;
 esac

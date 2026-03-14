@@ -27,6 +27,12 @@ discover_vpns() {
     VPNS["mexico"]=1083
     VPNS["japan"]=1084
     VPNS["canada"]=1085
+    VPNS["us2"]=1086
+    VPNS["us3"]=1087
+    VPNS["us4"]=1088
+    VPNS["mx2"]=1089
+    VPNS["us5"]=1090
+    VPNS["nl2"]=1091
     
     # Try to discover from running processes
     if [ -d "${VPN_DIR}" ]; then
