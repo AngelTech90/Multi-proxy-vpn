@@ -1,7 +1,8 @@
 #!/bin/bash
 
-# Security Monitor - Detects IP leaks and auto-restarts VPN system
-# Checks every 150 seconds if any proxy is leaking real IP
+# Security Monitor - Detects IP leaks and proxy connectivity issues
+# Checks every 45 seconds: first connectivity, then IP leaks
+# Auto-restarts individual VPNs if they lose connectivity or leak IP
 
 GREEN='\033[0;32m'
 RED='\033[0;31m'
@@ -11,28 +12,30 @@ NC='\033[0m'
 
 VPN_DIR="/etc/protonvpn"
 LOG_FILE="/var/log/protonvpn/security-monitor.log"
-CHECK_INTERVAL=150
+CHECK_INTERVAL=45
+PING_TIMEOUT=12
 RESTART_COOLDOWN=300
 LAST_RESTART_FILE="/tmp/vpn-last-restart"
 VPN_SCRIPT="/usr/local/bin/multi-vpn-proxy.sh"
 
 # Dynamic VPN discovery
 declare -A VPNS
+declare -A VPN_TUN
 
 discover_vpns() {
-    # Default ports if can't discover
-    VPNS["usa"]=1080
-    VPNS["netherlands"]=1081
-    VPNS["switzerland"]=1082
-    VPNS["mexico"]=1083
-    VPNS["japan"]=1084
-    VPNS["canada"]=1085
-    VPNS["us2"]=1086
-    VPNS["us3"]=1087
-    VPNS["us4"]=1088
-    VPNS["mx2"]=1089
-    VPNS["us5"]=1090
-    VPNS["nl2"]=1091
+    # Default ports and TUN devices
+    VPNS["usa"]=1080;         VPN_TUN["usa"]="tun0"
+    VPNS["netherlands"]=1081; VPN_TUN["netherlands"]="tun1"
+    VPNS["switzerland"]=1082; VPN_TUN["switzerland"]="tun2"
+    VPNS["mexico"]=1083;      VPN_TUN["mexico"]="tun3"
+    VPNS["japan"]=1084;       VPN_TUN["japan"]="tun4"
+    VPNS["canada"]=1085;      VPN_TUN["canada"]="tun5"
+    VPNS["us2"]=1086;         VPN_TUN["us2"]="tun6"
+    VPNS["us3"]=1087;         VPN_TUN["us3"]="tun7"
+    VPNS["us4"]=1088;         VPN_TUN["us4"]="tun8"
+    VPNS["mx2"]=1089;         VPN_TUN["mx2"]="tun9"
+    VPNS["us5"]=1090;         VPN_TUN["us5"]="tun10"
+    VPNS["nl2"]=1091;         VPN_TUN["nl2"]="tun11"
     
     # Try to discover from running processes
     if [ -d "${VPN_DIR}" ]; then
@@ -107,8 +110,74 @@ restart_vpn_system() {
     sleep 60
 }
 
+# Restart individual VPN in background (non-blocking)
+restart_vpn_individual() {
+    local VPN_NAME=$1
+    local VPN_TUN_DEV=${VPN_TUN[$VPN_NAME]}
+    
+    log_msg "🔄 Restarting individual VPN: ${VPN_NAME} (${VPN_TUN_DEV})"
+    
+    # Run restart in background to not block the monitoring cycle
+    (
+        ${VPN_SCRIPT} spec restart ${VPN_NAME} >> "${LOG_FILE}" 2>&1
+        if [ $? -eq 0 ]; then
+            log_msg "✅ VPN ${VPN_NAME} restarted successfully"
+        else
+            log_msg "❌ Failed to restart VPN ${VPN_NAME}"
+        fi
+    ) &
+    
+    log_msg "🚀 Restart initiated for ${VPN_NAME} in background"
+}
+
+# Check connectivity for all VPNs - non-blocking restart if fails
+check_connectivity() {
+    log_msg "📡 Starting connectivity check (timeout: ${PING_TIMEOUT}s per VPN)"
+    
+    local FAILED_VPNS=0
+    local CONNECTIVITY_ISSUES=()
+    
+    for VPN_NAME in "${!VPNS[@]}"; do
+        local TUN_DEV=${VPN_TUN[$VPN_NAME]}
+        local PORT=${VPNS[$VPN_NAME]}
+        
+        echo -n "  [CONN] ${VPN_NAME} (${TUN_DEV})... "
+        
+        # Check if interface exists
+        if ! ip addr show "${TUN_DEV}" &>/dev/null; then
+            echo -e "${RED}NO TUN${NC}"
+            log_msg "⚠️  ${VPN_NAME}: Interface ${TUN_DEV} not found - restarting"
+            restart_vpn_individual "${VPN_NAME}"
+            FAILED_VPNS=$((FAILED_VPNS + 1))
+            CONNECTIVITY_ISSUES+=("${VPN_NAME}: no tun")
+            continue
+        fi
+        
+        # Ping test through VPN tunnel (12s timeout)
+        if timeout ${PING_TIMEOUT} ping -I "${TUN_DEV}" -c 2 8.8.8.8 &>/dev/null; then
+            echo -e "${GREEN}OK${NC}"
+            log_msg "✓ ${VPN_NAME}: Connectivity OK"
+        else
+            echo -e "${RED}TIMEOUT${NC}"
+            log_msg "⚠️  ${VPN_NAME}: No connectivity (${PING_TIMEOUT}s timeout) - restarting"
+            restart_vpn_individual "${VPN_NAME}"
+            FAILED_VPNS=$((FAILED_VPNS + 1))
+            CONNECTIVITY_ISSUES+=("${VPN_NAME}: no ping")
+        fi
+    done
+    
+    echo ""
+    if [ ${FAILED_VPNS} -gt 0 ]; then
+        log_msg "📊 Connectivity check: ${FAILED_VPNS} VPNs failed - restarts initiated"
+    else
+        log_msg "📊 Connectivity check: All VPNs responding"
+    fi
+    
+    return ${FAILED_VPNS}
+}
+
 check_vpn_health() {
-    log_msg "🔍 Starting security check cycle"
+    log_msg "🔍 Starting IP leak check cycle"
     
     local REAL_IP=$(get_real_ip)
     
@@ -121,25 +190,24 @@ check_vpn_health() {
     
     local LEAKS_DETECTED=0
     local FAILED_CHECKS=0
-    local LEAKING_VPNS=()
     
-    # Check each VPN proxy
+    # Check each VPN proxy - non-blocking restart if leak detected
     for VPN_NAME in "${!VPNS[@]}"; do
         local PORT=${VPNS[$VPN_NAME]}
         
-        echo -n "  Checking ${VPN_NAME} (port ${PORT})... "
+        echo -n "  [LEAK] ${VPN_NAME} (port ${PORT})... "
         
         local PROXY_IP=$(get_proxy_ip ${PORT})
         
         if [ -z "${PROXY_IP}" ]; then
             echo -e "${YELLOW}TIMEOUT${NC}"
-            log_msg "⚠️  ${VPN_NAME}: Connection timeout"
+            log_msg "⚠️  ${VPN_NAME}: Connection timeout (leak check)"
             FAILED_CHECKS=$((FAILED_CHECKS + 1))
         elif [ "${PROXY_IP}" == "${REAL_IP}" ]; then
             echo -e "${RED}LEAK DETECTED!${NC}"
-            log_msg "🚨 SECURITY LEAK: ${VPN_NAME} exposing real IP ${REAL_IP}"
+            log_msg "🚨 SECURITY LEAK: ${VPN_NAME} exposing real IP ${REAL_IP} - restarting"
+            restart_vpn_individual "${VPN_NAME}"
             LEAKS_DETECTED=$((LEAKS_DETECTED + 1))
-            LEAKING_VPNS+=("${VPN_NAME}")
         else
             echo -e "${GREEN}OK (${PROXY_IP})${NC}"
             log_msg "✓ ${VPN_NAME}: Protected (${PROXY_IP})"
@@ -147,30 +215,11 @@ check_vpn_health() {
     done
     
     echo ""
-    log_msg "📊 Check results: ${LEAKS_DETECTED} leaks, ${FAILED_CHECKS} timeouts"
-    
-    if [ ${LEAKS_DETECTED} -gt 0 ]; then
-        log_msg "🚨 CRITICAL: IP LEAK DETECTED in ${LEAKING_VPNS[*]}"
-        
-        if check_restart_cooldown; then
-            restart_vpn_system
-            return 1
-        else
-            log_msg "⚠️  Restart skipped due to cooldown"
-            return 0
-        fi
-    elif [ ${FAILED_CHECKS} -ge 4 ]; then
-        log_msg "⚠️  WARNING: ${FAILED_CHECKS}/6 VPNs not responding"
-        
-        if check_restart_cooldown; then
-            restart_vpn_system
-            return 1
-        else
-            log_msg "⚠️  Restart skipped due to cooldown"
-            return 0
-        fi
+    if [ ${LEAKS_DETECTED} -gt 0 ] || [ ${FAILED_CHECKS} -gt 0 ]; then
+        log_msg "📊 Leak check: ${LEAKS_DETECTED} leaks, ${FAILED_CHECKS} timeouts - restarts initiated"
+        return 1
     else
-        log_msg "✅ All VPNs healthy - no leaks detected"
+        log_msg "📊 Leak check: All VPNs healthy - no leaks detected"
         return 0
     fi
 }
@@ -181,6 +230,7 @@ main() {
     log_msg "================================================"
     log_msg "🛡️  VPN Security Monitor Started"
     log_msg "Check interval: ${CHECK_INTERVAL} seconds"
+    log_msg "Ping timeout: ${PING_TIMEOUT} seconds"
     log_msg "Restart cooldown: ${RESTART_COOLDOWN} seconds"
     log_msg "================================================"
     
@@ -192,14 +242,22 @@ main() {
     while true; do
         echo ""
         echo "╔════════════════════════════════════════════════════════════════╗"
-        echo "║          VPN Security Check - $(date '+%H:%M:%S')                    ║"
+        echo "║          VPN Monitor Cycle - $(date '+%H:%M:%S')                    ║"
         echo "╚════════════════════════════════════════════════════════════════╝"
         echo ""
         
+        # Step 1: Check connectivity (ping test through tunnel)
+        echo "━━━ Step 1: Connectivity Check ━━━"
+        check_connectivity
+        
+        echo ""
+        
+        # Step 2: Check IP leaks
+        echo "━━━ Step 2: IP Leak Detection ━━━"
         check_vpn_health
         
         echo ""
-        log_msg "⏸️  Next check in ${CHECK_INTERVAL} seconds..."
+        log_msg "⏸️  Next full check in ${CHECK_INTERVAL} seconds..."
         sleep ${CHECK_INTERVAL}
     done
 }
