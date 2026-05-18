@@ -230,14 +230,11 @@ setup_vpn_proxy() {
         
         # El archivo ya tiene la ruta absoluta - no tocamos auth-user-pass
         
-        # Cambiar solo el device
+        # Aislar OpenVPN: Cambiar device, evitar rutas en main y evitar cambios de DNS
         sed -i "/^dev /d" "${TEMP_OVPN}"
         echo "dev ${TUN_DEV}" >> "${TEMP_OVPN}"
-        echo "pull-filter ignore \"redirect-gateway\"" >> "${TEMP_OVPN}"
-        
-        sed -i "/^dev /d" "${TEMP_OVPN}"
-        echo "dev ${TUN_DEV}" >> "${TEMP_OVPN}"
-        echo "pull-filter ignore \"redirect-gateway\"" >> "${TEMP_OVPN}"
+        echo "route-nopull" >> "${TEMP_OVPN}"
+        echo "pull-filter ignore \"dhcp-option DNS\"" >> "${TEMP_OVPN}"
         
         # Iniciar OpenVPN
         openvpn --config "${TEMP_OVPN}" \
@@ -484,8 +481,8 @@ case "$1" in
             ip route flush table ${table} 2>/dev/null || true
         done
         
-        # Limpiar reglas iptables
-        iptables -t mangle -F OUTPUT 2>/dev/null || true
+        # Limpiar reglas iptables (Quitamos el -F OUTPUT porque rompía el ruteo general)
+        # iptables -t mangle -F OUTPUT 2>/dev/null || true
         
         # Limpiar archivos PID
         rm -f "${RUN_DIR}"/openvpn-*.pid 2>/dev/null || true
