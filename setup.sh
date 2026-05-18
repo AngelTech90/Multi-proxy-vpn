@@ -95,20 +95,20 @@ install_dependencies() {
     
     case "${PKG_MANAGER}" in
         apt)
-            sudo apt-get update
-            sudo apt-get install -y openvpn curl iproute2 iptables net-tools
+            sudo apt-get update || log_warn "apt-get update falló, continuando..."
+            sudo apt-get install -y openvpn curl iproute2 iptables net-tools || log_warn "apt-get install falló"
             ;;
         dnf)
-            sudo dnf install -y openvpn curl iproute iptables net-tools
+            sudo dnf install -y openvpn curl iproute iptables net-tools || log_warn "Instalación falló"
             ;;
         pacman)
-            sudo pacman -S --noconfirm openvpn curl iproute2 iptables
+            sudo pacman -S --noconfirm openvpn curl iproute2 iptables || log_warn "Instalación falló"
             ;;
         zypper)
-            sudo zypper install -y openvpn curl iproute2 iptables
+            sudo zypper install -y openvpn curl iproute2 iptables || log_warn "Instalación falló"
             ;;
         apk)
-            sudo apk add openvpn curl iproute2 iptables
+            sudo apk add openvpn curl iproute2 iptables || log_warn "Instalación falló"
             ;;
     esac
     
@@ -138,8 +138,8 @@ install_dependencies() {
         # Descargar y compilar microsocks
         TEMP_DIR=$(mktemp -d)
         cd "${TEMP_DIR}"
-        curl -sL https://github.com/rofl0r/microsocks/archive/refs/heads/master.zip -o microsocks.zip
-        unzip -q microsocks.zip
+        curl -fsSL https://github.com/rofl0r/microsocks/archive/refs/heads/master.zip -o microsocks.zip || { log_error "Fallo al descargar microsocks"; exit 1; }
+        unzip -q microsocks.zip || { log_error "Fallo al descomprimir microsocks"; exit 1; }
         cd microsocks-*
         make
         sudo make install
@@ -165,17 +165,13 @@ cleanup_system() {
     sudo pkill -f openvpn 2>/dev/null || true
     sudo pkill -f microsocks 2>/dev/null || true
     
-    # Limpiar usuarios vpnuser
-    for i in $(seq 100 105); do
+    # Limpiar usuarios vpnuser y reglas de red
+    # (Evitamos iptables -F OUTPUT global para no romper la red de host)
+    for i in $(seq 100 111); do
         sudo userdel "vpnuser${i}" 2>/dev/null || true
-    done
-    
-    # Limpiar reglas de iptables
-    sudo iptables -t mangle -F OUTPUT 2>/dev/null || true
-    
-    # Limpiar reglas de ip
-    for i in $(seq 100 105); do
-        sudo ip rule del uidrange ${i}300-${i}300 2>/dev/null || true
+        
+        local PROXY_UID=$((3000 + i))
+        sudo ip rule del uidrange ${PROXY_UID}-${PROXY_UID} 2>/dev/null || true
         sudo ip rule del fwmark ${i} 2>/dev/null || true
         sudo ip route flush table ${i} 2>/dev/null || true
     done
@@ -201,25 +197,13 @@ setup_directories() {
     sudo mkdir -p "${LOG_DIR}"
     sudo mkdir -p /etc/iproute2
     
-    # Asegurar rt_tables
-    if ! grep -q "^100 usa" /etc/iproute2/rt_tables 2>/dev/null; then
-        echo "100 usa" | sudo tee -a /etc/iproute2/rt_tables > /dev/null
-    fi
-    if ! grep -q "^101 netherlands" /etc/iproute2/rt_tables 2>/dev/null; then
-        echo "101 netherlands" | sudo tee -a /etc/iproute2/rt_tables > /dev/null
-    fi
-    if ! grep -q "^102 norway" /etc/iproute2/rt_tables 2>/dev/null; then
-        echo "102 norway" | sudo tee -a /etc/iproute2/rt_tables > /dev/null
-    fi
-    if ! grep -q "^103 mexico" /etc/iproute2/rt_tables 2>/dev/null; then
-        echo "103 mexico" | sudo tee -a /etc/iproute2/rt_tables > /dev/null
-    fi
-    if ! grep -q "^104 japan" /etc/iproute2/rt_tables 2>/dev/null; then
-        echo "104 japan" | sudo tee -a /etc/iproute2/rt_tables > /dev/null
-    fi
-    if ! grep -q "^105 canada" /etc/iproute2/rt_tables 2>/dev/null; then
-        echo "105 canada" | sudo tee -a /etc/iproute2/rt_tables > /dev/null
-    fi
+    # Asegurar rt_tables (actualizado hasta 111)
+    local TABLES=("100 usa" "101 netherlands" "102 switzerland" "103 mexico" "104 japan" "105 canada" "106 us2" "107 us3" "108 us4" "109 mx2" "110 us5" "111 nl2")
+    for TABLE_ENTRY in "${TABLES[@]}"; do
+        if ! grep -q "^${TABLE_ENTRY}" /etc/iproute2/rt_tables 2>/dev/null; then
+            echo "${TABLE_ENTRY}" | sudo tee -a /etc/iproute2/rt_tables > /dev/null
+        fi
+    done
     
     log_success "Directorios creados"
 }
@@ -323,9 +307,11 @@ deploy_scripts() {
     sudo cp "${PROJECT_DIR}/multi-vpn-proxy.sh" /usr/local/bin/
     sudo chmod +x /usr/local/bin/multi-vpn-proxy.sh
     
-    # Copiar scripts de deployment
-    sudo cp "${DEPLOYMENT_DIR}"/*.sh /usr/local/bin/
-    sudo chmod +x /usr/local/bin/vpn-*.sh
+    # Copiar scripts de deployment (con check para evitar que set -e falle si no hay archivos)
+    if ls "${DEPLOYMENT_DIR}"/*.sh 1> /dev/null 2>&1; then
+        sudo cp "${DEPLOYMENT_DIR}"/*.sh /usr/local/bin/
+        sudo chmod +x /usr/local/bin/vpn-*.sh
+    fi
     
     # Copiar script de debugging
     sudo cp "${PROJECT_DIR}/debugging/vpn-debug.sh" /usr/local/bin/
