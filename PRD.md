@@ -376,12 +376,12 @@ These are the questions that must be answered to build a truly stable version of
 | I-04 | HIGH | `setup.sh` | `set -e` + apt failure = files never copied | ✅ Fixed |
 | I-05 | HIGH | `setup.sh` | Cleanup loop only covers 100–105, not 100–111 | ✅ Fixed |
 | I-06 | HIGH | `setup.sh` | Wrong UID arithmetic `${i}300` vs `$((3000+i))` | ✅ Fixed |
-| I-07 | MEDIUM | `multi-vpn-proxy.sh` | Gateway detection with fixed `sleep 5` is fragile | 🔲 Open |
-| I-08 | MEDIUM | `vpn-security-monitor.sh` | Wrong `VPN_DIR` path | 🔲 Open |
-| I-09 | LOW | `vpn-debug.sh` | Outdated VPN list (6 of 12, wrong `norway`) | 🔲 Open |
+| I-07 | MEDIUM | `multi-vpn-proxy.sh` | Gateway detection with fixed `sleep 5` is fragile | ✅ Fixed (gateway polling loop added, 30s timeout, empty return on failure, caller guards with `[ -z ]` check) |
+| I-08 | MEDIUM | `vpn-security-monitor.sh` | Wrong `VPN_DIR` path | ✅ Fixed (VPN_DIR corrected to `/usr/local/bin/ovpn`, broken dynamic discovery removed) |
+| I-09 | LOW | `vpn-debug.sh` | Outdated VPN list (6 of 12, wrong `norway`) | ✅ Fixed (norway→switzerland, added us2/us3/us4/mx2/us5/nl2 ports 1086–1091) |
 | I-10 | LOW | `multi-vpn-proxy.sh` | Duplicate `sed`/`echo` block for `.ovpn` prep | ✅ Fixed |
-| I-11 | ARCHITECTURAL | All | Shared global state (DNS, iptables) = cascading failures | 🔲 Research needed |
-| I-12 | ARCHITECTURAL | All | `pkill openvpn` prevents `--down` scripts from cleaning up DNS | 🔲 Open |
+| I-11 | ARCHITECTURAL | All | Shared global state (DNS, iptables) = cascading failures | ✅ Fixed via Docker (each container has isolated netns — DNS, iptables, routing table all isolated per container. Hard kill switch applied before VPN connects.) |
+| I-12 | ARCHITECTURAL | All | `pkill openvpn` prevents `--down` scripts from cleaning up DNS | ✅ Fixed (SIGTERM first, poll kill -0 up to 10s, SIGKILL fallback, pkill only if missing PID files) |
 
 ---
 
@@ -410,4 +410,24 @@ These are the questions that must be answered to build a truly stable version of
 
 ---
 
-*This document reflects the state of the system as of 2026-05-22. Issues I-01 through I-06 and I-10 have been addressed in the current session. Issues I-07 through I-09 and I-11 through I-12 remain open for future work.*
+*This document reflects the state of the system as of 2026-05-22. All issues I-01 through I-12 have been addressed. Docker-based architecture added in section 11.*
+
+---
+
+## 11. Docker Implementation
+
+Added as alternative architecture (PRD section 7.3). Files:
+
+- `docker/Dockerfile` — 2-stage Alpine 3.19 build. Builder stage compiles microsocks from source. Runtime: openvpn + iptables + ip6tables + iproute2 + microsocks binary. ~13–16 MB.
+- `docker/entrypoint.sh` — Hard kill switch (iptables DROP all OUTPUT before VPN connects). Whitelists UDP/443+1194 + tun0 + lo. IPv6 fully blocked. route-nopull + pull-filter ignore dhcp-option DNS. Polls tun0 up to 60s. microsocks runs background with wait loop for signal handling.
+- `docker/docker-compose.yml` — 12 services via x-vpn-base YAML anchor. Ports bind 127.0.0.1:1080–1091 only. ../ovpn mounted :ro. NET_ADMIN + NET_RAW caps. /dev/net/tun device.
+- `multi-vpn-proxy.sh` — docker subcommand integrated: build/start/stop/restart/status/test/logs
+
+Usage:
+```bash
+sudo /etc/init.d/docker start          # start daemon (Devuan/init.d system)
+sudo ./multi-vpn-proxy.sh docker build
+sudo ./multi-vpn-proxy.sh docker start
+sudo ./multi-vpn-proxy.sh docker status
+sudo ./multi-vpn-proxy.sh docker logs usa
+```
