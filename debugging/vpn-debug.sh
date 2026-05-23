@@ -118,13 +118,19 @@ case "${1}" in
         declare -A VPN_PORTS=(
             ["usa"]=1080
             ["netherlands"]=1081
-            ["norway"]=1082
+            ["switzerland"]=1082
             ["mexico"]=1083
             ["japan"]=1084
             ["canada"]=1085
+            ["us2"]=1086
+            ["us3"]=1087
+            ["us4"]=1088
+            ["mx2"]=1089
+            ["us5"]=1090
+            ["nl2"]=1091
         )
         
-        for VPN in usa netherlands norway mexico japan canada; do
+        for VPN in usa netherlands switzerland mexico japan canada us2 us3 us4 mx2 us5 nl2; do
             PORT=${VPN_PORTS[$VPN]}
             echo -n "Testing ${VPN} (puerto ${PORT})... "
             

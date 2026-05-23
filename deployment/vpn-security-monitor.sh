@@ -10,7 +10,7 @@ YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
 NC='\033[0m'
 
-VPN_DIR="/etc/protonvpn"
+VPN_DIR="/usr/local/bin/ovpn"
 LOG_FILE="/var/log/protonvpn/security-monitor.log"
 CHECK_INTERVAL=45
 PING_TIMEOUT=12
@@ -37,16 +37,6 @@ discover_vpns() {
     VPNS["us5"]=1090;         VPN_TUN["us5"]="tun10"
     VPNS["nl2"]=1091;         VPN_TUN["nl2"]="tun11"
     
-    # Try to discover from running processes
-    if [ -d "${VPN_DIR}" ]; then
-        echo "Discovered VPNs from ${VPN_DIR}:"
-        for ovpn in "${VPN_DIR}"/*.ovpn; do
-            if [ -f "${ovpn}" ]; then
-                name=$(basename "${ovpn}" | cut -d'-' -f1)
-                echo "  - ${name}"
-            fi
-        done
-    fi
 }
 
 log_msg() {

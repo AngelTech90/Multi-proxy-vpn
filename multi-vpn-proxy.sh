@@ -142,24 +142,31 @@ save_active_config() {
 get_vpn_gateway() {
     local TUN_DEV=$1
     local VPN_NAME=$2
-    
-    sleep 5
-    
-    local GW=$(grep -oP 'route_gateway \K[\d.]+' "${LOG_DIR}/${VPN_NAME}-openvpn.log" 2>/dev/null | tail -1)
-    
+    local GW=""
+    local elapsed=0
+
+    # Poll the log every 1s for up to 30s waiting for route_gateway
+    while [ ${elapsed} -lt 30 ]; do
+        GW=$(grep -oP 'route_gateway \K[\d.]+' "${LOG_DIR}/${VPN_NAME}-openvpn.log" 2>/dev/null | tail -1)
+        if [ -n "${GW}" ]; then
+            echo "${GW}"
+            return 0
+        fi
+        sleep 1
+        elapsed=$((elapsed + 1))
+    done
+
+    # Fallback: parse peer address from the tun interface
+    GW=$(ip addr show "${TUN_DEV}" 2>/dev/null | grep -oP 'peer \K[\d.]+' | head -1)
     if [ -n "${GW}" ]; then
         echo "${GW}"
         return 0
     fi
-    
-    GW=$(ip addr show "${TUN_DEV}" | grep -oP 'peer \K[\d.]+' | head -1)
-    
-    if [ -n "${GW}" ]; then
-        echo "${GW}"
-        return 0
-    fi
-    
-    echo "10.96.0.1"
+
+    # Both methods failed — return empty to signal failure
+    echo -e "${RED}[${VPN_NAME}]${NC} ERROR: No se pudo detectar el gateway VPN para ${TUN_DEV}" >&2
+    echo ""
+    return 1
 }
 
 # Función para verificar si una VPN funciona
@@ -299,9 +306,14 @@ setup_vpn_proxy() {
     fi
     
     # Obtener gateway
-    local VPN_GW=$(get_vpn_gateway "${TUN_DEV}" "${VPN_NAME}")
+    local VPN_GW
+    VPN_GW=$(get_vpn_gateway "${TUN_DEV}" "${VPN_NAME}")
+    if [ -z "${VPN_GW}" ]; then
+        echo -e "${RED}[${VPN_NAME}]${NC} ERROR: Gateway vacío, abortando configuración de routing"
+        return 1
+    fi
     echo -e "${GREEN}[${VPN_NAME}]${NC} Gateway: ${VPN_GW}"
-    
+
     # Configurar routing
     configure_routing_v3 "${VPN_NAME}" "${TUN_DEV}" "${ROUTE_TABLE}" "${PROXY_UID}" "${VPN_GW}"
     
@@ -392,7 +404,22 @@ cleanup_vpn() {
     pkill -9 -U ${PROXY_UID} 2>/dev/null || true
     
     if [ -f "${RUN_DIR}/openvpn-${VPN_NAME}.pid" ]; then
-        kill $(cat "${RUN_DIR}/openvpn-${VPN_NAME}.pid") 2>/dev/null || true
+        local OVPN_PID
+        OVPN_PID=$(cat "${RUN_DIR}/openvpn-${VPN_NAME}.pid" 2>/dev/null)
+        if [ -n "${OVPN_PID}" ] && kill -0 "${OVPN_PID}" 2>/dev/null; then
+            # SIGTERM first — lets --down scripts run cleanly
+            kill -TERM "${OVPN_PID}" 2>/dev/null || true
+            local waited=0
+            while kill -0 "${OVPN_PID}" 2>/dev/null && [ ${waited} -lt 10 ]; do
+                sleep 1
+                waited=$((waited + 1))
+            done
+            # Still alive after 10s → force kill
+            if kill -0 "${OVPN_PID}" 2>/dev/null; then
+                echo -e "${YELLOW}[${VPN_NAME}]${NC} OpenVPN no terminó en 10s, enviando SIGKILL"
+                kill -KILL "${OVPN_PID}" 2>/dev/null || true
+            fi
+        fi
         rm -f "${RUN_DIR}/openvpn-${VPN_NAME}.pid"
     fi
     
@@ -548,9 +575,20 @@ case "$1" in
             IFS=':' read -r PORT TABLE TUN PRIMARY BACKUP1 BACKUP2 <<< "${VPN_SERVERS[$VPN_NAME]}"
             cleanup_vpn "${VPN_NAME}" "${TABLE}" "${PORT}"
         done
-        
-        pkill -f openvpn 2>/dev/null || true
-        pkill -f microsocks 2>/dev/null || true 
+
+        # Last-resort sweep: only needed if any VPN had no PID file (pkill is targeted, not -f openvpn)
+        local missing_pid=0
+        for VPN_NAME in "${VPN_ORDER[@]}"; do
+            if [ ! -f "${RUN_DIR}/openvpn-${VPN_NAME}.pid" ]; then
+                missing_pid=1
+                break
+            fi
+        done
+        if [ ${missing_pid} -eq 1 ]; then
+            echo -e "${YELLOW}[WARN]${NC} Algunos PID files no encontrados — usando pkill como último recurso"
+            pkill -f openvpn 2>/dev/null || true
+        fi
+        pkill -f microsocks 2>/dev/null || true
 
         rm -f "${CONFIG_FILE}"
         
