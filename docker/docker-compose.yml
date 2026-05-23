@@ -1,0 +1,161 @@
+version: '3.8'
+
+x-vpn-base: &vpn-base
+  image: multi-vpn-proxy:latest
+  restart: unless-stopped
+  volumes:
+    - ../ovpn:/vpn/ovpn:ro
+  cap_add:
+    - NET_ADMIN
+    - NET_RAW
+  devices:
+    - /dev/net/tun
+  sysctls:
+    net.ipv4.conf.all.rp_filter: 0
+  dns:
+    - 1.1.1.1
+  logging:
+    driver: json-file
+    options:
+      max-size: "10m"
+      max-file: "3"
+
+services:
+  vpn-usa:
+    <<: *vpn-base
+    container_name: vpn-usa
+    environment:
+      VPN_NAME: usa
+      OVPN_FILE: us-free-67.protonvpn.udp.ovpn
+      CREDS_FILE: credentials.txt
+      PROXY_PORT: 1080
+    ports:
+      - "127.0.0.1:1080:1080"
+
+  vpn-netherlands:
+    <<: *vpn-base
+    container_name: vpn-netherlands
+    environment:
+      VPN_NAME: netherlands
+      OVPN_FILE: nl-free-244.protonvpn.udp.ovpn
+      CREDS_FILE: credentials.txt
+      PROXY_PORT: 1081
+    ports:
+      - "127.0.0.1:1081:1080"
+
+  vpn-switzerland:
+    <<: *vpn-base
+    container_name: vpn-switzerland
+    environment:
+      VPN_NAME: switzerland
+      OVPN_FILE: ch-free-9.protonvpn.udp.ovpn
+      CREDS_FILE: credentials-2.txt
+      PROXY_PORT: 1082
+    ports:
+      - "127.0.0.1:1082:1080"
+
+  vpn-mexico:
+    <<: *vpn-base
+    container_name: vpn-mexico
+    environment:
+      VPN_NAME: mexico
+      OVPN_FILE: mx-free-8.protonvpn.udp.ovpn
+      CREDS_FILE: credentials-2.txt
+      PROXY_PORT: 1083
+    ports:
+      - "127.0.0.1:1083:1080"
+
+  vpn-japan:
+    <<: *vpn-base
+    container_name: vpn-japan
+    environment:
+      VPN_NAME: japan
+      OVPN_FILE: jp-free-3.protonvpn.udp.ovpn
+      CREDS_FILE: credentials-3.txt
+      PROXY_PORT: 1084
+    ports:
+      - "127.0.0.1:1084:1080"
+
+  vpn-canada:
+    <<: *vpn-base
+    container_name: vpn-canada
+    environment:
+      VPN_NAME: canada
+      OVPN_FILE: ca-free-14.protonvpn.udp.ovpn
+      CREDS_FILE: credentials-3.txt
+      PROXY_PORT: 1085
+    ports:
+      - "127.0.0.1:1085:1080"
+
+  vpn-us2:
+    <<: *vpn-base
+    container_name: vpn-us2
+    environment:
+      VPN_NAME: us2
+      OVPN_FILE: us-free-24.protonvpn.udp.ovpn
+      CREDS_FILE: credentials-4.txt
+      PROXY_PORT: 1086
+    ports:
+      - "127.0.0.1:1086:1080"
+
+  vpn-us3:
+    <<: *vpn-base
+    container_name: vpn-us3
+    environment:
+      VPN_NAME: us3
+      OVPN_FILE: us-free-26.protonvpn.udp.ovpn
+      CREDS_FILE: credentials-4.txt
+      PROXY_PORT: 1087
+    ports:
+      - "127.0.0.1:1087:1080"
+
+  vpn-us4:
+    <<: *vpn-base
+    container_name: vpn-us4
+    environment:
+      VPN_NAME: us4
+      OVPN_FILE: us-free-85.protonvpn.udp.ovpn
+      CREDS_FILE: credentials-5.txt
+      PROXY_PORT: 1088
+    ports:
+      - "127.0.0.1:1088:1080"
+
+  vpn-mx2:
+    <<: *vpn-base
+    container_name: vpn-mx2
+    environment:
+      VPN_NAME: mx2
+      OVPN_FILE: mx-free-2.protonvpn.udp.ovpn
+      CREDS_FILE: credentials-5.txt
+      PROXY_PORT: 1089
+    ports:
+      - "127.0.0.1:1089:1080"
+
+  vpn-us5:
+    <<: *vpn-base
+    container_name: vpn-us5
+    environment:
+      VPN_NAME: us5
+      OVPN_FILE: us-free-1.protonvpn.udp.ovpn
+      CREDS_FILE: credentials-6.txt
+      PROXY_PORT: 1090
+    ports:
+      - "127.0.0.1:1090:1080"
+
+  vpn-nl2:
+    <<: *vpn-base
+    container_name: vpn-nl2
+    environment:
+      VPN_NAME: nl2
+      OVPN_FILE: nl-free-209.protonvpn.udp.ovpn
+      CREDS_FILE: credentials-6.txt
+      PROXY_PORT: 1091
+    ports:
+      - "127.0.0.1:1091:1080"
+
+networks:
+  default:
+    driver: bridge
+
+volumes:
+  # empty — logs stay in container, named vol for future use

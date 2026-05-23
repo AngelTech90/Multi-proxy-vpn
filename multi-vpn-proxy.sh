@@ -771,8 +771,98 @@ case "$1" in
         esac
         ;;
         
+    docker)
+        DOCKER_ACTION=$2
+        DOCKER_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/docker"
+        COMPOSE_FILE="${DOCKER_DIR}/docker-compose.yml"
+
+        if [ ! -f "${COMPOSE_FILE}" ]; then
+            echo -e "${RED}[DOCKER]${NC} docker-compose.yml not found at ${COMPOSE_FILE}"
+            exit 1
+        fi
+
+        case "${DOCKER_ACTION}" in
+            build)
+                echo -e "${BLUE}[DOCKER]${NC} Building multi-vpn-proxy image..."
+                docker build -t multi-vpn-proxy:latest "${DOCKER_DIR}"
+                echo -e "${GREEN}[DOCKER]${NC} ✓ Image built: multi-vpn-proxy:latest"
+                ;;
+
+            start)
+                echo -e "${BLUE}[DOCKER]${NC} Starting all VPN containers..."
+                docker compose -f "${COMPOSE_FILE}" up -d
+                echo -e "${GREEN}[DOCKER]${NC} ✓ Containers started"
+                sleep 3
+                docker compose -f "${COMPOSE_FILE}" ps
+                ;;
+
+            stop)
+                echo -e "${BLUE}[DOCKER]${NC} Stopping all VPN containers..."
+                docker compose -f "${COMPOSE_FILE}" down
+                echo -e "${GREEN}[DOCKER]${NC} ✓ Containers stopped"
+                ;;
+
+            restart)
+                echo -e "${BLUE}[DOCKER]${NC} Restarting all VPN containers..."
+                docker compose -f "${COMPOSE_FILE}" restart
+                echo -e "${GREEN}[DOCKER]${NC} ✓ Containers restarted"
+                ;;
+
+            status)
+                echo -e "${BLUE}[DOCKER]${NC} Container status:"
+                docker compose -f "${COMPOSE_FILE}" ps
+                echo ""
+                echo -e "${BLUE}[DOCKER]${NC} Proxy connectivity test:"
+                for VPN_NAME in "${VPN_ORDER[@]}"; do
+                    IFS=':' read -r PORT TABLE TUN PRIMARY BACKUP1 BACKUP2 <<< "${VPN_SERVERS[$VPN_NAME]}"
+                    echo -n "  ${VPN_NAME} (127.0.0.1:${PORT})... "
+                    IP=$(timeout 10 curl --socks5 "127.0.0.1:${PORT}" -s https://ifconfig.me 2>/dev/null)
+                    if [ -n "${IP}" ]; then
+                        echo -e "${GREEN}✓${NC} ${IP}"
+                    else
+                        echo -e "${RED}✗ no response${NC}"
+                    fi
+                done
+                ;;
+
+            test)
+                echo -e "${BLUE}[DOCKER]${NC} Testing all proxy ports..."
+                echo ""
+                for VPN_NAME in "${VPN_ORDER[@]}"; do
+                    IFS=':' read -r PORT TABLE TUN PRIMARY BACKUP1 BACKUP2 <<< "${VPN_SERVERS[$VPN_NAME]}"
+                    echo -n "  ${VPN_NAME} (port ${PORT})... "
+                    IP=$(timeout 15 curl --socks5 "127.0.0.1:${PORT}" -s https://ifconfig.me 2>/dev/null)
+                    if [ -n "${IP}" ]; then
+                        echo -e "${GREEN}✓${NC} IP: ${IP}"
+                    else
+                        echo -e "${RED}✗ Error${NC}"
+                    fi
+                done
+                ;;
+
+            logs)
+                LOGS_VPN=${3:-""}
+                if [ -n "${LOGS_VPN}" ]; then
+                    docker logs -f "vpn-${LOGS_VPN}"
+                else
+                    echo -e "${BLUE}[DOCKER]${NC} Showing last 20 lines per container..."
+                    for VPN_NAME in "${VPN_ORDER[@]}"; do
+                        echo -e "${YELLOW}[vpn-${VPN_NAME}]${NC}"
+                        docker logs --tail 20 "vpn-${VPN_NAME}" 2>/dev/null || echo "  Container not running"
+                        echo ""
+                    done
+                fi
+                ;;
+
+            *)
+                echo "Uso: $0 docker {build|start|stop|restart|status|test|logs [vpn_name]}"
+                exit 1
+                ;;
+        esac
+        ;;
+
     *)
-        echo "Uso: $0 {start|stop|restart|status|test} o $0 spec {start|stop|restart|status|test} <vpn_name>"
+        echo "Uso: $0 {start|stop|restart|status|test|docker} o $0 spec {start|stop|restart|status|test} <vpn_name> o $0 docker {build|start|stop|restart|status|test|logs}"
         exit 1
         ;;
 esac
