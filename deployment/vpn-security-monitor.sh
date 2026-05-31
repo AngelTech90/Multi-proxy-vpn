@@ -116,7 +116,8 @@ restart_vpn_individual() {
             log_msg "❌ Failed to restart VPN ${VPN_NAME}"
         fi
     ) &
-    
+
+    sleep 2
     log_msg "🚀 Restart initiated for ${VPN_NAME} in background"
 }
 
@@ -191,7 +192,8 @@ check_vpn_health() {
         
         if [ -z "${PROXY_IP}" ]; then
             echo -e "${YELLOW}TIMEOUT${NC}"
-            log_msg "⚠️  ${VPN_NAME}: Connection timeout (leak check)"
+            log_msg "⚠️  ${VPN_NAME}: Connection timeout (leak check) - restarting"
+            restart_vpn_individual "${VPN_NAME}"
             FAILED_CHECKS=$((FAILED_CHECKS + 1))
         elif [ "${PROXY_IP}" == "${REAL_IP}" ]; then
             echo -e "${RED}LEAK DETECTED!${NC}"

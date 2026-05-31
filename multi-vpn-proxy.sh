@@ -156,14 +156,29 @@ get_vpn_gateway() {
         elapsed=$((elapsed + 1))
     done
 
-    # Fallback: parse peer address from the tun interface
-    GW=$(ip addr show "${TUN_DEV}" 2>/dev/null | grep -oP 'peer \K[\d.]+' | head -1)
+    # Fallback 1: parse ip route output for the tun device default gateway
+    GW=$(ip route show dev "${TUN_DEV}" 2>/dev/null | grep -oP 'via \K[\d.]+' | head -1)
     if [ -n "${GW}" ]; then
         echo "${GW}"
         return 0
     fi
 
-    # Both methods failed — return empty to signal failure
+    # Fallback 2: ProtonVPN uses 10.96.0.x/16 — gateway is always .1 of the subnet
+    local TUN_IP=$(ip -4 addr show "${TUN_DEV}" 2>/dev/null | grep -oP '(?<=inet\s)\d+(\.\d+){3}' | head -1)
+    if [ -n "${TUN_IP}" ]; then
+        GW="${TUN_IP%.*}.1"
+        echo "${GW}"
+        return 0
+    fi
+
+    # Fallback 3: OpenVPN log — look for the server IP it connected to
+    GW=$(grep -oP 'UDPv4 link remote: \[AF_INET\][\d.]+' "${LOG_DIR}/${VPN_NAME}-openvpn.log" 2>/dev/null | grep -oP '[\d.]+$' | tail -1)
+    if [ -n "${GW}" ]; then
+        echo "${GW}"
+        return 0
+    fi
+
+    # All methods failed
     echo -e "${RED}[${VPN_NAME}]${NC} ERROR: No se pudo detectar el gateway VPN para ${TUN_DEV}" >&2
     echo ""
     return 1
@@ -570,14 +585,31 @@ case "$1" in
         
     stop)
         echo "Deteniendo todas las VPNs y proxies..."
-        
+
+        # Safety check: kill any process holding VPN proxy ports
+        echo -e "${YELLOW}[CLEANUP]${NC} Checking for processes on ports 1080-1091..."
+        for port in 1080 1081 1082 1083 1084 1085 1086 1087 1088 1089 1090 1091; do
+            PID=$(sudo fuser ${port}/tcp 2>/dev/null | tr -d ' ')
+            if [ -n "${PID}" ]; then
+                echo -e "${YELLOW}[WARN]${NC} Port ${port} in use by PID ${PID} — killing..."
+                sudo kill -9 ${PID} 2>/dev/null || true
+            fi
+        done
+
+        # Also check for docker-proxy processes (from failed Docker runs)
+        DOCKER_PROXY_PIDS=$(sudo docker ps -q --filter "name=vpn-" 2>/dev/null)
+        if [ -n "${DOCKER_PROXY_PIDS}" ]; then
+            echo -e "${YELLOW}[WARN]${NC} Docker VPN containers still running — stopping them..."
+            sudo docker-compose --file "${COMPOSE_FILE}" down 2>/dev/null || true
+        fi
+
         for VPN_NAME in "${VPN_ORDER[@]}"; do
             IFS=':' read -r PORT TABLE TUN PRIMARY BACKUP1 BACKUP2 <<< "${VPN_SERVERS[$VPN_NAME]}"
             cleanup_vpn "${VPN_NAME}" "${TABLE}" "${PORT}"
         done
 
         # Last-resort sweep: only needed if any VPN had no PID file (pkill is targeted, not -f openvpn)
-        local missing_pid=0
+        missing_pid=0
         for VPN_NAME in "${VPN_ORDER[@]}"; do
             if [ ! -f "${RUN_DIR}/openvpn-${VPN_NAME}.pid" ]; then
                 missing_pid=1
@@ -677,12 +709,18 @@ case "$1" in
                 
             stop)
                 echo -e "${YELLOW}[SPEC]${NC} Deteniendo VPN específico: ${SPEC_VPN}"
-                
-                # Matar procesos
+
+                OVPN_PID=$(cat "${RUN_DIR}/openvpn-${SPEC_VPN}.pid" 2>/dev/null || echo "")
+                if [ -n "${OVPN_PID}" ] && kill -0 "${OVPN_PID}" 2>/dev/null; then
+                    kill -TERM "${OVPN_PID}" 2>/dev/null || true
+                    WAITED=0
+                    while kill -0 "${OVPN_PID}" 2>/dev/null && [ ${WAITED} -lt 10 ]; do sleep 1; WAITED=$((WAITED + 1)); done
+                    if kill -0 "${OVPN_PID}" 2>/dev/null; then kill -KILL "${OVPN_PID}"; fi
+                fi
                 pkill -f "openvpn.*${TUN}" 2>/dev/null || true
                 pkill -f "microsocks.*${PORT}" 2>/dev/null || true
-                
-                # Limpiar reglas
+                ip link del "${TUN}" 2>/dev/null || true
+
                 while ip rule del uidrange ${PROXY_UID}-${PROXY_UID} 2>/dev/null; do :; done
                 while ip rule del fwmark ${TABLE} 2>/dev/null; do :; done
                 ip route flush table ${TABLE} 2>/dev/null || true
@@ -695,10 +733,21 @@ case "$1" in
                 
             restart)
                 echo -e "${YELLOW}[SPEC]${NC} Reiniciando VPN específico: ${SPEC_VPN}"
-                
-                # Stop
+
+                OVPN_PID=$(cat "${RUN_DIR}/openvpn-${SPEC_VPN}.pid" 2>/dev/null || echo "")
+                if [ -n "${OVPN_PID}" ] && kill -0 "${OVPN_PID}" 2>/dev/null; then
+                    kill -TERM "${OVPN_PID}" 2>/dev/null || true
+                    WAITED=0
+                    while kill -0 "${OVPN_PID}" 2>/dev/null && [ ${WAITED} -lt 10 ]; do sleep 1; WAITED=$((WAITED + 1)); done
+                    if kill -0 "${OVPN_PID}" 2>/dev/null; then kill -KILL "${OVPN_PID}"; fi
+                fi
                 pkill -f "openvpn.*${TUN}" 2>/dev/null || true
                 pkill -f "microsocks.*${PORT}" 2>/dev/null || true
+                rm -f "${RUN_DIR}/openvpn-${SPEC_VPN}.pid"
+                ip link del "${TUN}" 2>/dev/null || true
+                ip link set "${TUN}" down 2>/dev/null || true
+                sleep 1
+
                 while ip rule del uidrange ${PROXY_UID}-${PROXY_UID} 2>/dev/null; do :; done
                 while ip rule del fwmark ${TABLE} 2>/dev/null; do :; done
                 ip route flush table ${TABLE} 2>/dev/null || true
@@ -776,6 +825,15 @@ case "$1" in
         DOCKER_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/docker"
         COMPOSE_FILE="${DOCKER_DIR}/docker-compose.yml"
 
+        if docker compose version &>/dev/null; then
+            DOCKER_COMPOSE="docker compose"
+        elif docker-compose --version &>/dev/null; then
+            DOCKER_COMPOSE="docker-compose"
+        else
+            echo -e "${RED}[DOCKER]${NC} docker compose not found. Install: sudo apt-get install docker-compose"
+            exit 1
+        fi
+
         if [ ! -f "${COMPOSE_FILE}" ]; then
             echo -e "${RED}[DOCKER]${NC} docker-compose.yml not found at ${COMPOSE_FILE}"
             exit 1
@@ -790,27 +848,27 @@ case "$1" in
 
             start)
                 echo -e "${BLUE}[DOCKER]${NC} Starting all VPN containers..."
-                docker compose -f "${COMPOSE_FILE}" up -d
+                ${DOCKER_COMPOSE} --file "${COMPOSE_FILE}" up -d
                 echo -e "${GREEN}[DOCKER]${NC} ✓ Containers started"
                 sleep 3
-                docker compose -f "${COMPOSE_FILE}" ps
+                ${DOCKER_COMPOSE} --file "${COMPOSE_FILE}" ps
                 ;;
 
             stop)
                 echo -e "${BLUE}[DOCKER]${NC} Stopping all VPN containers..."
-                docker compose -f "${COMPOSE_FILE}" down
+                ${DOCKER_COMPOSE} --file "${COMPOSE_FILE}" down
                 echo -e "${GREEN}[DOCKER]${NC} ✓ Containers stopped"
                 ;;
 
             restart)
                 echo -e "${BLUE}[DOCKER]${NC} Restarting all VPN containers..."
-                docker compose -f "${COMPOSE_FILE}" restart
+                ${DOCKER_COMPOSE} --file "${COMPOSE_FILE}" restart
                 echo -e "${GREEN}[DOCKER]${NC} ✓ Containers restarted"
                 ;;
 
             status)
                 echo -e "${BLUE}[DOCKER]${NC} Container status:"
-                docker compose -f "${COMPOSE_FILE}" ps
+                ${DOCKER_COMPOSE} --file "${COMPOSE_FILE}" ps
                 echo ""
                 echo -e "${BLUE}[DOCKER]${NC} Proxy connectivity test:"
                 for VPN_NAME in "${VPN_ORDER[@]}"; do
@@ -854,8 +912,14 @@ case "$1" in
                 fi
                 ;;
 
+            docker-down)
+                echo -e "${BLUE}[DOCKER]${NC} Stopping Docker containers..."
+                ${DOCKER_COMPOSE} --file "${COMPOSE_FILE}" down 2>&1
+                echo -e "${GREEN}[DOCKER]${NC} Containers stopped"
+                ;;
+
             *)
-                echo "Uso: $0 docker {build|start|stop|restart|status|test|logs [vpn_name]}"
+                echo "Uso: $0 docker {build|start|stop|restart|docker-down|status|test|logs [vpn_name]}"
                 exit 1
                 ;;
         esac

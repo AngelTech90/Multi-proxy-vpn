@@ -157,5 +157,4 @@ networks:
   default:
     driver: bridge
 
-volumes:
-  # empty — logs stay in container, named vol for future use
+volumes: {}

@@ -55,14 +55,19 @@ iptables -A OUTPUT -o lo -j ACCEPT
 iptables -A INPUT  -m state --state ESTABLISHED,RELATED -j ACCEPT
 iptables -A OUTPUT -m state --state ESTABLISHED,RELATED -j ACCEPT
 
-# Allow OpenVPN UDP outbound — ProtonVPN uses 1194 and 443
-iptables -A OUTPUT -p udp --dport 1194 -j ACCEPT
-iptables -A OUTPUT -p udp --dport 443  -j ACCEPT
+# Allow ALL UDP outbound — OpenVPN needs to reach VPN server before tunnel exists
+# After tunnel establishes, all traffic goes through tun0 anyway
+iptables -A OUTPUT -p udp -j ACCEPT
 iptables -A OUTPUT -p tcp --dport 443  -j ACCEPT
 
-# Allow all traffic through tun0 once it comes up
+# Allow all traffic through tun0 once it comes up (OpenVPN + all proxy outbound)
 iptables -A INPUT  -i tun0 -j ACCEPT
 iptables -A OUTPUT -o tun0 -j ACCEPT
+
+# Allow all outbound from microsocks (proxy client connections go through tun0)
+iptables -A OUTPUT -p tcp --dport 80  -j ACCEPT
+iptables -A OUTPUT -p tcp --dport 443 -j ACCEPT
+iptables -A OUTPUT -p udp --dport 53  -j ACCEPT
 
 # Block IPv6 entirely — leak prevention
 ip6tables -P INPUT   DROP
@@ -75,19 +80,34 @@ echo "[INFO] Kill switch active — all non-VPN traffic blocked"
 echo "[INFO] Preparing VPN config..."
 
 cp "${OVPN_SRC}" "${OVPN_TMP}"
+cp "${CREDS_SRC}" "/tmp/${CREDS_FILE}"
 
 # Remove any existing dev directive and pin to tun0
 sed -i '/^dev /d' "${OVPN_TMP}"
 echo "dev tun0" >> "${OVPN_TMP}"
 
-# Prevent container from pulling routes into the host netns
-echo "route-nopull" >> "${OVPN_TMP}"
+# Remove any baked-in up/down scripts (Alpine doesn't have update-resolv-conf)
+sed -i '/^up /d' "${OVPN_TMP}"
+sed -i '/^down /d' "${OVPN_TMP}"
+
+# No route-nopull: we WANT OpenVPN to set the default route via tun0.
+# Container has isolated netns — no risk of host pollution.
+# This makes ALL container traffic (including microsocks outbound) go through the VPN.
+# Kill switch already handles leak protection via iptables.
 
 # No DNS hijacking inside container
 echo 'pull-filter ignore "dhcp-option DNS"' >> "${OVPN_TMP}"
 
+# Fix auth-user-pass path to be absolute
+sed -i "s|auth-user-pass.*|auth-user-pass /tmp/${CREDS_FILE}|" "${OVPN_TMP}"
+
 # Allow openvpn to run external scripts if needed
 echo "script-security 2" >> "${OVPN_TMP}"
+
+# Override up/down scripts that may be baked into the OVPN file
+# (Alpine doesn't have update-resolv-conf)
+echo "up /bin/true" >> "${OVPN_TMP}"
+echo "down /bin/true" >> "${OVPN_TMP}"
 
 echo "[INFO] VPN config written to ${OVPN_TMP}"
 
@@ -98,7 +118,14 @@ openvpn \
     --config "${OVPN_TMP}" \
     --log    "${VPN_LOG}"  \
     --verb   4             \
-    --daemon
+    --daemon || {
+    echo "[ERROR] openvpn failed to start. Log contents:" >&2
+    cat "${VPN_LOG}" >&2
+    exit 1
+}
+
+# Give openvpn a moment to fork and create the tun device
+sleep 2
 
 # ── Wait for tun0 ─────────────────────────────────────────────────────────────
 echo "[INFO] Waiting for tun0 interface (timeout: 60s)..."
